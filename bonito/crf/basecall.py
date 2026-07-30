@@ -94,7 +94,8 @@ def save_initial_state_as_npy(outdir, name, data):
 
 
 def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
-             reverse=False, rna=False, scores_out_dir=None, scores_out_format="npy", scores_only=False):
+             reverse=False, rna=False, scores_out_dir=None, scores_out_format="npy", scores_only=False,
+             blank_score=2.0):
     """
     Basecalls a set of reads.
     """
@@ -106,7 +107,10 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
     batches = thread_iter(batchify(chunks, batchsize=batchsize))
 
     score_function = compute_transition_scores if scores_only else compute_scores
-    scores = thread_iter((read, score_function(model, batch, reverse=reverse)) for read, batch in batches)
+    scores = thread_iter(
+        (read, score_function(model, batch, reverse=reverse, blank_score=blank_score))
+        for read, batch in batches
+    )
 
     results = thread_iter(
         (read, stitch_results(scores, end - start, chunksize, overlap, model.stride, reverse))

@@ -136,6 +136,7 @@ def main(args):
         reverse=args.revcomp,
         rna=args.rna,
         scores_only=args.scores_only,
+        blank_score=args.blank_score,
     )
     if args.scores_only:
         basecall_kwargs["scores_out_format"] = args.scores_format
@@ -204,6 +205,8 @@ def argparser():
                         help="Directory for per-read score output")
     parser.add_argument("--scores-format", choices=["npy", "csv"], default="npy",
                         help="Per-read score output format")
+    parser.add_argument("--blank-score", type=float, default=2.0,
+                        help="CRF blank score used for normal decoding and --scores-only export")
     quant_parser = parser.add_mutually_exclusive_group(required=False)
     quant_parser.add_argument("--quantize", dest="quantize", action="store_true")
     quant_parser.add_argument("--no-quantize", dest="quantize", action="store_false")
