@@ -11,7 +11,6 @@ from koi.decode import beam_search, to_str
 
 from bonito.multiprocessing import thread_iter
 from bonito.util import chunk, stitch, batchify, unbatchify
-from fast_ctc_decode import crf_greedy_search
 
 
 def stitch_results(results, length, size, overlap, stride, reverse=False):
@@ -30,8 +29,27 @@ def stitch_results(results, length, size, overlap, stride, reverse=False):
 
 def compute_scores(model, batch, beam_width=32, beam_cut=100.0, scale=1.0, offset=0.0, blank_score=2.0, reverse=False):
     """
-    Compute CRF transition scores and decode them with the public greedy decoder.
+    Run the stock CRF beam decoder used for ordinary Bonito basecalling.
     """
+    with torch.inference_mode():
+        device = next(model.parameters()).device
+        scores = model(batch.to(torch.float16).to(device))
+        if reverse:
+            scores = model.seqdist.reverse_complement(scores)
+        with torch.cuda.device(scores.device):
+            sequence, qstring, moves = beam_search(
+                scores, beam_width=beam_width, beam_cut=beam_cut,
+                scale=scale, offset=offset, blank_score=blank_score,
+            )
+        return {
+            'moves': moves,
+            'qstring': qstring,
+            'sequence': sequence,
+        }
+
+
+def compute_transition_scores(model, batch, blank_score=2.0, reverse=False):
+    """Compute CRF transitions for ``--scores-only`` without decoding reads."""
     with torch.inference_mode():
         device = next(model.parameters()).device
         scores = model(batch.to(torch.float16).to(device))
@@ -50,29 +68,7 @@ def compute_scores(model, batch, beam_width=32, beam_cut=100.0, scale=1.0, offse
         transitions, initial_state = model.seqdist.compute_transition_probs(scores_pad, betas)
         tracebacks = transitions.to(torch.float32).transpose(0, 1).cpu()
         initial_state = initial_state.to(torch.float32).unsqueeze(1).cpu()
-
-        sequence = torch.zeros((batch_size, time_steps), dtype=torch.uint8)
-        qstring = torch.zeros((batch_size, time_steps), dtype=torch.uint8)
-        moves = torch.zeros((batch_size, time_steps), dtype=torch.uint8)
-        for batch_index in range(batch_size):
-            decoded, path = crf_greedy_search(
-                network_output=tracebacks[batch_index].numpy(),
-                init_state=initial_state[batch_index][0].numpy(),
-                alphabet="NACGT",
-                qstring=True,
-                qscale=1,
-                qbias=1,
-            )
-            midpoint = len(decoded) // 2
-            sequence_values = np.frombuffer(decoded[:midpoint].encode(), dtype=np.uint8).copy()
-            quality_values = np.frombuffer(decoded[midpoint:].encode(), dtype=np.uint8).copy()
-            sequence[batch_index, path] = torch.from_numpy(sequence_values[:len(path)])
-            qstring[batch_index, path] = torch.from_numpy(quality_values[:len(path)])
-            moves[batch_index, path] = 1
         return {
-            'moves': moves,
-            'qstring': qstring,
-            'sequence': sequence,
             'scores': tracebacks,
             'initial_state': initial_state.squeeze(1),
         }
@@ -109,9 +105,8 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
 
     batches = thread_iter(batchify(chunks, batchsize=batchsize))
 
-    scores = thread_iter(
-        (read, compute_scores(model, batch, reverse=reverse)) for read, batch in batches
-    )
+    score_function = compute_transition_scores if scores_only else compute_scores
+    scores = thread_iter((read, score_function(model, batch, reverse=reverse)) for read, batch in batches)
 
     results = thread_iter(
         (read, stitch_results(scores, end - start, chunksize, overlap, model.stride, reverse))
@@ -129,9 +124,12 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
                 save_initial_state_as_npy(scores_out_dir, name, attrs['initial_state'].cpu().numpy())
             yield read, attrs
 
-    if scores_out_dir is not None:
+    if scores_only:
+        if scores_out_dir is None:
+            raise ValueError("scores_out_dir is required when scores_only is enabled")
         sys.stderr.write(f"Scores will be saved to {scores_out_dir} in {scores_out_format} format\n")
         results = export_scores(results)
+        return thread_iter((read, None) for read, _ in results)
 
     return thread_iter(
         (read, fmt(model.stride, attrs, rna))
