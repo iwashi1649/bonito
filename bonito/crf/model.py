@@ -8,6 +8,7 @@ import numpy as np
 import koi.lstm
 from koi.ctc import SequenceDist, Max, Log, semiring
 from koi.ctc import logZ_cu, viterbi_alignments, logZ_cu_sparse, bwd_scores_cu_sparse, fwd_scores_cu_sparse
+import seqdist.sparse
 
 from bonito.nn import Module, Convolution, LinearCRFEncoder, Serial, Permute, layers, to_dict, from_dict, register
 
@@ -64,7 +65,7 @@ class CTC_CRF(SequenceDist):
         T, N, _ = scores.shape
         Ms = scores.reshape(T, N, -1, self.n_base + 1)
         beta_T = Ms.new_full((N, self.n_base**(self.state_len)), S.one)
-        return bwd_scores_cu_sparse(Ms, self.idx, beta_T, S, K=1)
+        return seqdist.sparse.bwd_scores_cupy(Ms, self.idx, beta_T, S, K=1)
 
     def compute_transition_probs(self, scores, betas):
         T, N, C = scores.shape

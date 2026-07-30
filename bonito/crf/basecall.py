@@ -2,12 +2,16 @@
 Bonito CRF basecalling
 """
 
+import os
+import sys
+
 import torch
 import numpy as np
 from koi.decode import beam_search, to_str
 
 from bonito.multiprocessing import thread_iter
 from bonito.util import chunk, stitch, batchify, unbatchify
+from fast_ctc_decode import crf_greedy_search
 
 
 def stitch_results(results, length, size, overlap, stride, reverse=False):
@@ -16,7 +20,7 @@ def stitch_results(results, length, size, overlap, stride, reverse=False):
     """
     if isinstance(results, dict):
         return {
-            k: stitch_results(v, length, size, overlap, stride, reverse=reverse)
+            k: (v[0] if k == 'initial_state' else stitch_results(v, length, size, overlap, stride, reverse=reverse))
             for k, v in results.items()
         }
     if length < size:
@@ -26,22 +30,51 @@ def stitch_results(results, length, size, overlap, stride, reverse=False):
 
 def compute_scores(model, batch, beam_width=32, beam_cut=100.0, scale=1.0, offset=0.0, blank_score=2.0, reverse=False):
     """
-    Compute scores for model.
+    Compute CRF transition scores and decode them with the public greedy decoder.
     """
     with torch.inference_mode():
         device = next(model.parameters()).device
         scores = model(batch.to(torch.float16).to(device))
         if reverse:
             scores = model.seqdist.reverse_complement(scores)
-        with torch.cuda.device(scores.device):
-            sequence, qstring, moves = beam_search(
-                scores, beam_width=beam_width, beam_cut=beam_cut,
-                scale=scale, offset=offset, blank_score=blank_score
+
+        scores_pad = scores.permute(1, 0, 2)
+        n_base = model.seqdist.n_base
+        time_steps, batch_size, channels = scores_pad.shape
+        scores_pad = torch.nn.functional.pad(
+            scores_pad.view(time_steps, batch_size, channels // n_base, n_base),
+            (1, 0, 0, 0, 0, 0, 0, 0),
+            value=blank_score,
+        ).view(time_steps, batch_size, -1)
+        betas = model.seqdist.backward_scores(scores_pad.to(torch.float32))
+        transitions, initial_state = model.seqdist.compute_transition_probs(scores_pad, betas)
+        tracebacks = transitions.to(torch.float32).transpose(0, 1).cpu()
+        initial_state = initial_state.to(torch.float32).unsqueeze(1).cpu()
+
+        sequence = torch.zeros((batch_size, time_steps), dtype=torch.uint8)
+        qstring = torch.zeros((batch_size, time_steps), dtype=torch.uint8)
+        moves = torch.zeros((batch_size, time_steps), dtype=torch.uint8)
+        for batch_index in range(batch_size):
+            decoded, path = crf_greedy_search(
+                network_output=tracebacks[batch_index].numpy(),
+                init_state=initial_state[batch_index][0].numpy(),
+                alphabet="NACGT",
+                qstring=True,
+                qscale=1,
+                qbias=1,
             )
+            midpoint = len(decoded) // 2
+            sequence_values = np.frombuffer(decoded[:midpoint].encode(), dtype=np.uint8).copy()
+            quality_values = np.frombuffer(decoded[midpoint:].encode(), dtype=np.uint8).copy()
+            sequence[batch_index, path] = torch.from_numpy(sequence_values[:len(path)])
+            qstring[batch_index, path] = torch.from_numpy(quality_values[:len(path)])
+            moves[batch_index, path] = 1
         return {
             'moves': moves,
             'qstring': qstring,
             'sequence': sequence,
+            'scores': tracebacks,
+            'initial_state': initial_state.squeeze(1),
         }
 
 
@@ -52,11 +85,20 @@ def fmt(stride, attrs, rna=False):
         'moves': attrs['moves'].numpy(),
         'qstring': fliprna(to_str(attrs['qstring'])),
         'sequence': fliprna(to_str(attrs['sequence'])),
+        'raw_scores': attrs.get('raw_scores'),
     }
 
 
+def save_scores_as_npy(outdir, name, data):
+    np.save(os.path.join(outdir, f"{name}_scores.npy"), data)
+
+
+def save_initial_state_as_npy(outdir, name, data):
+    np.save(os.path.join(outdir, f"{name}_initial_state.npy"), data)
+
+
 def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
-             reverse=False, rna=False):
+             reverse=False, rna=False, scores_out_dir=None, scores_out_format="npy", scores_only=False):
     """
     Basecalls a set of reads.
     """
@@ -75,6 +117,21 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
         (read, stitch_results(scores, end - start, chunksize, overlap, model.stride, reverse))
         for ((read, start, end), scores) in unbatchify(scores)
     )
+
+    def export_scores(results_iter):
+        for read, attrs in results_iter:
+            if scores_out_dir is not None:
+                os.makedirs(scores_out_dir, exist_ok=True)
+                name = getattr(read, 'name', None) or getattr(read, 'read_id', None) or str(id(read))
+                name = str(name).split('!')[1] if '!' in str(name) else str(name)
+                name = ''.join(char if (char.isalnum() or char in ('-', '_')) else '_' for char in name)
+                save_scores_as_npy(scores_out_dir, name, attrs['scores'].cpu().numpy())
+                save_initial_state_as_npy(scores_out_dir, name, attrs['initial_state'].cpu().numpy())
+            yield read, attrs
+
+    if scores_out_dir is not None:
+        sys.stderr.write(f"Scores will be saved to {scores_out_dir} in {scores_out_format} format\n")
+        results = export_scores(results)
 
     return thread_iter(
         (read, fmt(model.stride, attrs, rna))

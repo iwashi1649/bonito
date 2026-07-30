@@ -4,6 +4,7 @@ Bonito Basecaller
 
 import os
 import sys
+import inspect
 import numpy as np
 from tqdm import tqdm
 from time import perf_counter
@@ -128,12 +129,26 @@ def main(args):
     else:
         ResultsWriter = Writer
 
-    results = basecall(
-        model, reads, reverse=args.revcomp, rna=args.rna,
+    basecall_kwargs = dict(
         batchsize=model.config["basecaller"]["batchsize"],
         chunksize=model.config["basecaller"]["chunksize"],
-        overlap=model.config["basecaller"]["overlap"]
+        overlap=model.config["basecaller"]["overlap"],
+        reverse=args.revcomp,
+        rna=args.rna,
+        scores_only=args.scores_only,
     )
+    if args.scores_only:
+        basecall_kwargs["scores_out_format"] = args.scores_format
+        if args.scores_dir is not None:
+            basecall_kwargs["scores_out_dir"] = args.scores_dir
+    accepted = set(inspect.signature(basecall).parameters)
+    results = basecall(model, reads, **{key: value for key, value in basecall_kwargs.items() if key in accepted})
+
+    if args.scores_only and "scores_only" in accepted:
+        for _ in results:
+            pass
+        sys.stderr.write("> exported scores only (no decode / no fastq)\n")
+        return
 
     if aligner:
         results = align_map(aligner, results, n_thread=args.alignment_threads)
@@ -183,6 +198,12 @@ def argparser():
     parser.add_argument("--revcomp", action="store_true", default=False)
     parser.add_argument("--rna", action="store_true", default=False)
     parser.add_argument("--recursive", action="store_true", default=False)
+    parser.add_argument("--scores-only", action="store_true", default=False,
+                        help="Export per-read scores and skip decoding/FASTQ output")
+    parser.add_argument("--scores-dir", default=None,
+                        help="Directory for per-read score output")
+    parser.add_argument("--scores-format", choices=["npy", "csv"], default="npy",
+                        help="Per-read score output format")
     quant_parser = parser.add_mutually_exclusive_group(required=False)
     quant_parser.add_argument("--quantize", dest="quantize", action="store_true")
     quant_parser.add_argument("--no-quantize", dest="quantize", action="store_false")
