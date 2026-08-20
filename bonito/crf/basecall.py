@@ -4,6 +4,7 @@ Bonito CRF basecalling
 
 import os
 import sys
+from time import perf_counter
 
 import torch
 import numpy as np
@@ -11,6 +12,11 @@ from koi.decode import beam_search, to_str
 
 from bonito.multiprocessing import thread_iter
 from bonito.util import chunk, stitch, batchify, unbatchify
+
+
+def _synchronize(device):
+    if getattr(device, "type", None) == "cuda":
+        torch.cuda.synchronize(device)
 
 
 def stitch_results(results, length, size, overlap, stride, reverse=False):
@@ -48,14 +54,20 @@ def compute_scores(model, batch, beam_width=32, beam_cut=100.0, scale=1.0, offse
         }
 
 
-def compute_transition_scores(model, batch, blank_score=2.0, reverse=False):
+def compute_transition_scores(model, batch, blank_score=2.0, reverse=False, timing=None):
     """Compute CRF transitions for ``--scores-only`` without decoding reads."""
     with torch.inference_mode():
         device = next(model.parameters()).device
-        scores = model(batch.to(torch.float16).to(device))
+        model_input = batch.to(torch.float16).to(device)
+        _synchronize(device)
+        started = perf_counter()
+        scores = model(model_input)
         if reverse:
             scores = model.seqdist.reverse_complement(scores)
+        _synchronize(device)
+        model_forward_seconds = perf_counter() - started
 
+        started = perf_counter()
         scores_pad = scores.permute(1, 0, 2)
         n_base = model.seqdist.n_base
         time_steps, batch_size, channels = scores_pad.shape
@@ -66,8 +78,21 @@ def compute_transition_scores(model, batch, blank_score=2.0, reverse=False):
         ).view(time_steps, batch_size, -1)
         betas = model.seqdist.backward_scores(scores_pad.to(torch.float32))
         transitions, initial_state = model.seqdist.compute_transition_probs(scores_pad, betas)
+        _synchronize(device)
+        transition_probability_seconds = perf_counter() - started
+
+        started = perf_counter()
         tracebacks = transitions.to(torch.float32).transpose(0, 1).cpu()
         initial_state = initial_state.to(torch.float32).unsqueeze(1).cpu()
+        _synchronize(device)
+        cpu_transfer_array_seconds = perf_counter() - started
+        if timing is not None:
+            timing["batches"].append({
+                "batch_size": int(batch.shape[0]),
+                "model_forward_seconds": model_forward_seconds,
+                "transition_probability_seconds": transition_probability_seconds,
+                "cpu_transfer_array_seconds": cpu_transfer_array_seconds,
+            })
         return {
             'scores': tracebacks,
             'initial_state': initial_state.squeeze(1),
@@ -95,7 +120,7 @@ def save_initial_state_as_npy(outdir, name, data):
 
 def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
              reverse=False, rna=False, scores_out_dir=None, scores_out_format="npy", scores_only=False,
-             blank_score=2.0):
+             blank_score=2.0, scores_timing=None):
     """
     Basecalls a set of reads.
     """
@@ -108,7 +133,8 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
 
     score_function = compute_transition_scores if scores_only else compute_scores
     scores = thread_iter(
-        (read, score_function(model, batch, reverse=reverse, blank_score=blank_score))
+        (read, score_function(model, batch, reverse=reverse, blank_score=blank_score,
+                              **({"timing": scores_timing} if scores_only else {})))
         for read, batch in batches
     )
 
@@ -124,8 +150,21 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
                 name = getattr(read, 'name', None) or getattr(read, 'read_id', None) or str(id(read))
                 name = str(name).split('!')[1] if '!' in str(name) else str(name)
                 name = ''.join(char if (char.isalnum() or char in ('-', '_')) else '_' for char in name)
-                save_scores_as_npy(scores_out_dir, name, attrs['scores'].cpu().numpy())
-                save_initial_state_as_npy(scores_out_dir, name, attrs['initial_state'].cpu().numpy())
+                started = perf_counter()
+                scores_array = attrs['scores'].numpy()
+                initial_array = attrs['initial_state'].numpy()
+                array_seconds = perf_counter() - started
+                started = perf_counter()
+                save_scores_as_npy(scores_out_dir, name, scores_array)
+                save_initial_state_as_npy(scores_out_dir, name, initial_array)
+                write_seconds = perf_counter() - started
+                if scores_timing is not None:
+                    scores_timing["reads"].append({
+                        "read_id": name,
+                        "frames": int(scores_array.shape[0]),
+                        "array_view_seconds": array_seconds,
+                        "npy_serialization_write_seconds": write_seconds,
+                    })
             yield read, attrs
 
     if scores_only:

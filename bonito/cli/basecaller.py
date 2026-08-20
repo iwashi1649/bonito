@@ -5,6 +5,7 @@ Bonito Basecaller
 import os
 import sys
 import inspect
+import json
 import numpy as np
 from tqdm import tqdm
 from time import perf_counter
@@ -138,16 +139,46 @@ def main(args):
         scores_only=args.scores_only,
         blank_score=args.blank_score,
     )
+    score_timing = None
     if args.scores_only:
         basecall_kwargs["scores_out_format"] = args.scores_format
         if args.scores_dir is not None:
             basecall_kwargs["scores_out_dir"] = args.scores_dir
+        if args.scores_timing_json is not None:
+            score_timing = {"schema_version": 1, "batches": [], "reads": []}
+            basecall_kwargs["scores_timing"] = score_timing
     accepted = set(inspect.signature(basecall).parameters)
+    score_export_started = perf_counter()
     results = basecall(model, reads, **{key: value for key, value in basecall_kwargs.items() if key in accepted})
 
     if args.scores_only and "scores_only" in accepted:
-        for _ in results:
+        for _ in tqdm(results, desc="> exporting scores", unit=" reads", leave=False,
+                      total=num_reads, smoothing=0, ascii=True, ncols=100,
+                      **tqdm_environ()):
             pass
+        score_export_wall = perf_counter() - score_export_started
+        if score_timing is not None:
+            batch_fields = ("model_forward_seconds", "transition_probability_seconds",
+                            "cpu_transfer_array_seconds")
+            totals = {field: sum(row[field] for row in score_timing["batches"])
+                      for field in batch_fields}
+            totals["array_view_seconds"] = sum(row["array_view_seconds"] for row in score_timing["reads"])
+            totals["npy_serialization_write_seconds"] = sum(
+                row["npy_serialization_write_seconds"] for row in score_timing["reads"])
+            totals["score_export_wall_seconds"] = score_export_wall
+            measured = sum(value for key, value in totals.items() if key != "score_export_wall_seconds")
+            totals["unattributed_wall_seconds"] = score_export_wall - measured
+            score_timing["aggregate"] = {
+                "batch_count": len(score_timing["batches"]),
+                "read_count": len(score_timing["reads"]),
+                **totals,
+                "note": "stage sums may overlap because Bonito pipelines work with thread_iter",
+            }
+            timing_path = os.path.abspath(args.scores_timing_json)
+            os.makedirs(os.path.dirname(timing_path), exist_ok=True)
+            with open(timing_path, "w", encoding="utf-8") as handle:
+                json.dump(score_timing, handle, indent=2)
+                handle.write("\n")
         sys.stderr.write("> exported scores only (no decode / no fastq)\n")
         return
 
@@ -205,6 +236,8 @@ def argparser():
                         help="Directory for per-read score output")
     parser.add_argument("--scores-format", choices=["npy", "csv"], default="npy",
                         help="Per-read score output format")
+    parser.add_argument("--scores-timing-json", default=None,
+                        help="Write detailed score-export timing as JSON")
     parser.add_argument("--blank-score", type=float, default=2.0,
                         help="CRF blank score used for normal decoding and --scores-only export")
     quant_parser = parser.add_mutually_exclusive_group(required=False)
