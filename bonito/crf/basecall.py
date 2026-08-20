@@ -4,6 +4,7 @@ Bonito CRF basecalling
 
 import os
 import sys
+import json
 from time import perf_counter
 
 import torch
@@ -120,7 +121,8 @@ def save_initial_state_as_npy(outdir, name, data):
 
 def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
              reverse=False, rna=False, scores_out_dir=None, scores_out_format="npy", scores_only=False,
-             blank_score=2.0, scores_timing=None):
+             blank_score=2.0, scores_timing=None, scores_decoder=None,
+             scores_decoder_out_dir=None):
     """
     Basecalls a set of reads.
     """
@@ -145,32 +147,50 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
 
     def export_scores(results_iter):
         for read, attrs in results_iter:
+            name = getattr(read, 'name', None) or getattr(read, 'read_id', None) or str(id(read))
+            name = str(name).split('!')[1] if '!' in str(name) else str(name)
+            name = ''.join(char if (char.isalnum() or char in ('-', '_')) else '_' for char in name)
+            started = perf_counter()
+            scores_array = attrs['scores'].numpy()
+            initial_array = attrs['initial_state'].numpy()
+            array_seconds = perf_counter() - started
+            write_seconds = 0.0
             if scores_out_dir is not None:
                 os.makedirs(scores_out_dir, exist_ok=True)
-                name = getattr(read, 'name', None) or getattr(read, 'read_id', None) or str(id(read))
-                name = str(name).split('!')[1] if '!' in str(name) else str(name)
-                name = ''.join(char if (char.isalnum() or char in ('-', '_')) else '_' for char in name)
-                started = perf_counter()
-                scores_array = attrs['scores'].numpy()
-                initial_array = attrs['initial_state'].numpy()
-                array_seconds = perf_counter() - started
                 started = perf_counter()
                 save_scores_as_npy(scores_out_dir, name, scores_array)
                 save_initial_state_as_npy(scores_out_dir, name, initial_array)
                 write_seconds = perf_counter() - started
+            if scores_timing is not None:
+                scores_timing["reads"].append({
+                    "read_id": name,
+                    "frames": int(scores_array.shape[0]),
+                    "array_view_seconds": array_seconds,
+                    "npy_serialization_write_seconds": write_seconds,
+                })
+            if scores_decoder is not None:
+                started = perf_counter()
+                decoded = scores_decoder(scores_array, initial_array)
+                decode_seconds = perf_counter() - started
+                os.makedirs(scores_decoder_out_dir, exist_ok=True)
+                with open(os.path.join(scores_decoder_out_dir, f"{name}.json"), "w", encoding="utf-8") as handle:
+                    json.dump(decoded, handle, indent=2)
+                    handle.write("\n")
                 if scores_timing is not None:
-                    scores_timing["reads"].append({
-                        "read_id": name,
-                        "frames": int(scores_array.shape[0]),
-                        "array_view_seconds": array_seconds,
-                        "npy_serialization_write_seconds": write_seconds,
+                    scores_timing.setdefault("direct_decodes", []).append({
+                        "read_id": name, "decode_seconds": decode_seconds,
                     })
             yield read, attrs
 
     if scores_only:
-        if scores_out_dir is None:
-            raise ValueError("scores_out_dir is required when scores_only is enabled")
-        sys.stderr.write(f"Scores will be saved to {scores_out_dir} in {scores_out_format} format\n")
+        if scores_out_dir is None and scores_decoder is None:
+            raise ValueError("scores_out_dir or scores_decoder is required when scores_only is enabled")
+        if scores_out_dir is not None:
+            sys.stderr.write(f"Scores will be saved to {scores_out_dir} in {scores_out_format} format\n")
+        if scores_decoder is not None:
+            if scores_decoder_out_dir is None:
+                raise ValueError("scores_decoder_out_dir is required with scores_decoder")
+            sys.stderr.write(f"Direct decoder results will be saved to {scores_decoder_out_dir}\n")
         results = export_scores(results)
         return thread_iter((read, None) for read, _ in results)
 

@@ -147,6 +147,12 @@ def main(args):
         if args.scores_timing_json is not None:
             score_timing = {"schema_version": 1, "batches": [], "reads": []}
             basecall_kwargs["scores_timing"] = score_timing
+        if args.hedges_crf_direct_results_dir is not None:
+            from nanopore_dna_storage.decoding.hedges_crf_cpp_binding import load_binding
+            binding = load_binding()
+            basecall_kwargs["scores_decoder"] = lambda scores, initial: binding.decode_probabilities(
+                scores, initial, "TCGAAGTCAGCGTGTATTGTATG", "AGTAGTGAGTGCGATTAAGCGTGTT")
+            basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
     accepted = set(inspect.signature(basecall).parameters)
     score_export_started = perf_counter()
     results = basecall(model, reads, **{key: value for key, value in basecall_kwargs.items() if key in accepted})
@@ -165,6 +171,8 @@ def main(args):
             totals["array_view_seconds"] = sum(row["array_view_seconds"] for row in score_timing["reads"])
             totals["npy_serialization_write_seconds"] = sum(
                 row["npy_serialization_write_seconds"] for row in score_timing["reads"])
+            totals["direct_decode_seconds"] = sum(
+                row["decode_seconds"] for row in score_timing.get("direct_decodes", []))
             totals["score_export_wall_seconds"] = score_export_wall
             measured = sum(value for key, value in totals.items() if key != "score_export_wall_seconds")
             totals["stage_sum_seconds"] = measured
@@ -239,6 +247,8 @@ def argparser():
                         help="Per-read score output format")
     parser.add_argument("--scores-timing-json", default=None,
                         help="Write detailed score-export timing as JSON")
+    parser.add_argument("--hedges-crf-direct-results-dir", default=None,
+                        help="Decode CRF scores in memory with the experimental C++ HEDGES binding")
     parser.add_argument("--blank-score", type=float, default=2.0,
                         help="CRF blank score used for normal decoding and --scores-only export")
     quant_parser = parser.add_mutually_exclusive_group(required=False)
