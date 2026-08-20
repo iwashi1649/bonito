@@ -151,7 +151,8 @@ def main(args):
             from nanopore_dna_storage.decoding.hedges_crf_cpp_binding import load_binding
             binding = load_binding()
             basecall_kwargs["scores_decoder"] = lambda scores, initial: binding.decode_probabilities(
-                scores, initial, "TCGAAGTCAGCGTGTATTGTATG", "AGTAGTGAGTGCGATTAAGCGTGTT")
+                scores, initial, "TCGAAGTCAGCGTGTATTGTATG", "AGTAGTGAGTGCGATTAAGCGTGTT",
+                coderatecode=args.hedges_crf_coderatecode)
             basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
     accepted = set(inspect.signature(basecall).parameters)
     score_export_started = perf_counter()
@@ -249,6 +250,8 @@ def argparser():
                         help="Write detailed score-export timing as JSON")
     parser.add_argument("--hedges-crf-direct-results-dir", default=None,
                         help="Decode CRF scores in memory with the experimental C++ HEDGES binding")
+    parser.add_argument("--hedges-crf-coderatecode", type=int, default=3,
+                        help="HEDGES coderatecode for the experimental in-memory decoder")
     parser.add_argument("--blank-score", type=float, default=2.0,
                         help="CRF blank score used for normal decoding and --scores-only export")
     quant_parser = parser.add_mutually_exclusive_group(required=False)
