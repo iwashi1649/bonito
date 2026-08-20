@@ -167,7 +167,8 @@ def main(args):
                 row["npy_serialization_write_seconds"] for row in score_timing["reads"])
             totals["score_export_wall_seconds"] = score_export_wall
             measured = sum(value for key, value in totals.items() if key != "score_export_wall_seconds")
-            totals["unattributed_wall_seconds"] = score_export_wall - measured
+            totals["stage_sum_seconds"] = measured
+            totals["stage_sum_minus_wall_seconds"] = measured - score_export_wall
             score_timing["aggregate"] = {
                 "batch_count": len(score_timing["batches"]),
                 "read_count": len(score_timing["reads"]),
