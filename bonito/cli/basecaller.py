@@ -85,6 +85,34 @@ def main(args):
         sys.stderr.write("> a reference is needed to output ctc training data\n")
         exit(1)
 
+    calibration_consumer = None
+    calibration_args = (
+        args.calibration_reference_fasta,
+        args.calibration_manifest,
+        args.calibration_summary,
+    )
+    if any(value is not None for value in calibration_args):
+        if not all(value is not None for value in calibration_args):
+            sys.stderr.write(
+                "> --calibration-reference-fasta, --calibration-manifest, and "
+                "--calibration-summary are required together\n")
+            exit(1)
+        if not args.scores_only:
+            sys.stderr.write("> calibration statistics require --scores-only\n")
+            exit(1)
+        from nanopore_dna_storage.decoding.bonito_calibration_consumer import (
+            BonitoCalibrationConsumer,
+        )
+        calibration_consumer = BonitoCalibrationConsumer(
+            args.calibration_reference_fasta,
+            args.calibration_manifest,
+            args.calibration_summary,
+            batch_size=args.calibration_batch_size,
+            trim_bases=args.calibration_trim_bases,
+            checkpoint_every_reads=args.calibration_checkpoint_every,
+            resume=args.calibration_resume,
+        )
+
     if fmt.name != 'fastq':
         groups, num_reads = reader.get_read_groups(
             args.reads_directory, args.model_directory,
@@ -154,6 +182,8 @@ def main(args):
                 scores, initial, "TCGAAGTCAGCGTGTATTGTATG", "AGTAGTGAGTGCGATTAAGCGTGTT",
                 coderatecode=args.hedges_crf_coderatecode)
             basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
+        if calibration_consumer is not None:
+            basecall_kwargs["scores_consumer"] = calibration_consumer
     accepted = set(inspect.signature(basecall).parameters)
     score_export_started = perf_counter()
     results = basecall(model, reads, **{key: value for key, value in basecall_kwargs.items() if key in accepted})
@@ -166,7 +196,7 @@ def main(args):
         score_export_wall = perf_counter() - score_export_started
         if score_timing is not None:
             batch_fields = ("model_forward_seconds", "transition_probability_seconds",
-                            "cpu_transfer_array_seconds")
+                            "cpu_transfer_array_seconds", "device_tensor_prepare_seconds")
             totals = {field: sum(row[field] for row in score_timing["batches"])
                       for field in batch_fields}
             totals["array_view_seconds"] = sum(row["array_view_seconds"] for row in score_timing["reads"])
@@ -252,6 +282,20 @@ def argparser():
                         help="Decode CRF scores in memory with the experimental C++ HEDGES binding")
     parser.add_argument("--hedges-crf-coderatecode", type=int, default=3,
                         help="HEDGES coderatecode for the experimental in-memory decoder")
+    parser.add_argument("--calibration-reference-fasta", default=None,
+                        help="Known per-read references for on-device calibration statistics")
+    parser.add_argument("--calibration-manifest", default=None,
+                        help="Fixed read_id/train-validation TSV for calibration statistics")
+    parser.add_argument("--calibration-summary", default=None,
+                        help="Atomic checkpoint and final compact calibration JSON")
+    parser.add_argument("--calibration-batch-size", type=int, default=10,
+                        help="Number of equal-reference-length reads per calibration DP batch")
+    parser.add_argument("--calibration-trim-bases", type=int, default=10,
+                        help="Reference bases excluded from each end")
+    parser.add_argument("--calibration-checkpoint-every", type=int, default=1000,
+                        help="Processed reads between atomic calibration checkpoints")
+    parser.add_argument("--calibration-resume", action="store_true", default=False,
+                        help="Restore compact aggregates and skip already processed read IDs")
     parser.add_argument("--blank-score", type=float, default=2.0,
                         help="CRF blank score used for normal decoding and --scores-only export")
     quant_parser = parser.add_mutually_exclusive_group(required=False)
