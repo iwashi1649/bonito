@@ -111,6 +111,9 @@ def main(args):
             trim_bases=args.calibration_trim_bases,
             checkpoint_every_reads=args.calibration_checkpoint_every,
             resume=args.calibration_resume,
+            phase=args.calibration_phase,
+            learning_rate=args.calibration_learning_rate,
+            shrinkage_support=args.calibration_shrinkage_support,
         )
 
     if fmt.name != 'fastq':
@@ -296,6 +299,14 @@ def argparser():
                         help="Processed reads between atomic calibration checkpoints")
     parser.add_argument("--calibration-resume", action="store_true", default=False,
                         help="Restore compact aggregates and skip already processed read IDs")
+    parser.add_argument("--calibration-phase",
+                        choices=["statistics", "train", "validation"],
+                        default="statistics",
+                        help="Collect statistics, update matrices, or evaluate fixed matrices")
+    parser.add_argument("--calibration-learning-rate", type=float, default=0.01,
+                        help="Adam learning rate for global and state calibration matrices")
+    parser.add_argument("--calibration-shrinkage-support", type=float, default=100.0,
+                        help="State support scale for shrinkage toward the global matrix")
     parser.add_argument("--blank-score", type=float, default=2.0,
                         help="CRF blank score used for normal decoding and --scores-only export")
     quant_parser = parser.add_mutually_exclusive_group(required=False)
