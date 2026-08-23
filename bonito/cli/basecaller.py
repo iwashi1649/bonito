@@ -114,6 +114,7 @@ def main(args):
             phase=args.calibration_phase,
             learning_rate=args.calibration_learning_rate,
             shrinkage_support=args.calibration_shrinkage_support,
+            optimizer_interval_batches=args.calibration_optimizer_interval_batches,
         )
 
     if fmt.name != 'fastq':
@@ -307,6 +308,8 @@ def argparser():
                         help="Adam learning rate for global and state calibration matrices")
     parser.add_argument("--calibration-shrinkage-support", type=float, default=100.0,
                         help="State support scale for shrinkage toward the global matrix")
+    parser.add_argument("--calibration-optimizer-interval-batches", type=int, default=1,
+                        help="Posterior batches accumulated per Adam update")
     parser.add_argument("--blank-score", type=float, default=2.0,
                         help="CRF blank score used for normal decoding and --scores-only export")
     quant_parser = parser.add_mutually_exclusive_group(required=False)
