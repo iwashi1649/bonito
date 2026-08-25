@@ -181,10 +181,18 @@ def main(args):
             basecall_kwargs["scores_timing"] = score_timing
         if args.hedges_crf_direct_results_dir is not None:
             from nanopore_dna_storage.decoding.hedges_crf_cpp_binding import load_binding
+            state_calibration = None
+            if args.hedges_crf_calibration_matrix is not None:
+                import json
+                from pathlib import Path
+                from nanopore_dna_storage.decoding.crf_calibration import load_calibration_payload
+                payload = json.loads(Path(args.hedges_crf_calibration_matrix).read_text(encoding="utf-8"))
+                state_calibration, _ = load_calibration_payload(payload)
             binding = load_binding()
             basecall_kwargs["scores_decoder"] = lambda scores, initial: binding.decode_probabilities(
                 scores, initial, "TCGAAGTCAGCGTGTATTGTATG", "AGTAGTGAGTGCGATTAAGCGTGTT",
-                coderatecode=args.hedges_crf_coderatecode)
+                coderatecode=args.hedges_crf_coderatecode,
+                state_calibration_matrices=state_calibration)
             basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
         if calibration_consumer is not None:
             basecall_kwargs["scores_consumer"] = calibration_consumer
@@ -284,6 +292,8 @@ def argparser():
                         help="Write detailed score-export timing as JSON")
     parser.add_argument("--hedges-crf-direct-results-dir", default=None,
                         help="Decode CRF scores in memory with the experimental C++ HEDGES binding")
+    parser.add_argument("--hedges-crf-calibration-matrix", default=None,
+                        help="State-specific 5x5 calibration artifact for direct CRF-HEDGES decode")
     parser.add_argument("--hedges-crf-coderatecode", type=int, default=3,
                         help="HEDGES coderatecode for the experimental in-memory decoder")
     parser.add_argument("--calibration-reference-fasta", default=None,
