@@ -183,7 +183,6 @@ def main(args):
             from nanopore_dna_storage.decoding.hedges_crf_cpp_binding import load_binding
             state_calibration = None
             if args.hedges_crf_calibration_matrix is not None:
-                import json
                 from pathlib import Path
                 from nanopore_dna_storage.decoding.crf_calibration import load_calibration_payload
                 payload = json.loads(Path(args.hedges_crf_calibration_matrix).read_text(encoding="utf-8"))
