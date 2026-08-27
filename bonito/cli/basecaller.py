@@ -192,6 +192,7 @@ def main(args):
             basecall_kwargs["scores_decoder"] = lambda scores, initial: binding.decode_probabilities(
                 scores, initial, "TCGAAGTCAGCGTGTATTGTATG", "AGTAGTGAGTGCGATTAAGCGTGTT",
                 coderatecode=args.hedges_crf_coderatecode,
+                zero_regret_reward=args.hedges_crf_zero_regret_reward,
                 state_calibration_matrices=state_calibration)
             basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
         if calibration_consumer is not None:
@@ -296,6 +297,8 @@ def argparser():
                         help="State-specific 5x5 calibration artifact for direct CRF-HEDGES decode")
     parser.add_argument("--hedges-crf-coderatecode", type=int, default=3,
                         help="HEDGES coderatecode for the experimental in-memory decoder")
+    parser.add_argument("--hedges-crf-zero-regret-reward", type=float, default=0.2,
+                        help="Zero-regret reward for the experimental in-memory decoder")
     parser.add_argument("--calibration-reference-fasta", default=None,
                         help="Known per-read references for on-device calibration statistics")
     parser.add_argument("--calibration-manifest", default=None,
