@@ -5,6 +5,8 @@ Bonito CRF basecalling
 import os
 import sys
 import json
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 
 import torch
@@ -129,7 +131,7 @@ def save_initial_state_as_npy(outdir, name, data):
 def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
              reverse=False, rna=False, scores_out_dir=None, scores_out_format="npy", scores_only=False,
              blank_score=2.0, scores_timing=None, scores_decoder=None,
-             scores_decoder_out_dir=None, scores_consumer=None):
+             scores_decoder_out_dir=None, scores_decoder_workers=1, scores_consumer=None):
     """
     Basecalls a set of reads.
     """
@@ -155,6 +157,42 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
     )
 
     def export_scores(results_iter):
+        def decode_and_write(name, scores_array, initial_array):
+            started = perf_counter()
+            decoded = scores_decoder(scores_array, initial_array)
+            decode_seconds = perf_counter() - started
+            os.makedirs(scores_decoder_out_dir, exist_ok=True)
+            with open(os.path.join(scores_decoder_out_dir, f"{name}.json"), "w", encoding="utf-8") as handle:
+                json.dump(decoded, handle, indent=2)
+                handle.write("\n")
+            return decode_seconds
+
+        def record_timing(name, attrs, array_seconds, write_seconds, decode_seconds=None):
+            if scores_timing is not None:
+                if decode_seconds is not None:
+                    scores_timing.setdefault("direct_decodes", []).append({
+                        "read_id": name, "decode_seconds": decode_seconds,
+                    })
+                scores_timing["reads"].append({
+                    "read_id": name,
+                    "frames": int(attrs['scores'].shape[0]),
+                    "array_view_seconds": array_seconds,
+                    "npy_serialization_write_seconds": write_seconds,
+                })
+
+        executor = None
+        pending = deque()
+        if scores_decoder is not None and scores_decoder_workers > 1:
+            executor = ThreadPoolExecutor(
+                max_workers=scores_decoder_workers,
+                thread_name_prefix="hedges-crf-decode")
+
+        def finish_oldest():
+            future, read, attrs, name, array_seconds, write_seconds = pending.popleft()
+            decode_seconds = future.result()
+            record_timing(name, attrs, array_seconds, write_seconds, decode_seconds)
+            return read, attrs
+
         try:
             for read, attrs in results_iter:
                 name = getattr(read, 'name', None) or getattr(read, 'read_id', None) or str(id(read))
@@ -165,6 +203,8 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
                     scores_consumer(name, attrs['scores'], attrs['initial_state'])
                     array_seconds = 0.0
                     write_seconds = 0.0
+                    record_timing(name, attrs, array_seconds, write_seconds)
+                    yield read, attrs
                 else:
                     scores_array = attrs['scores'].numpy()
                     initial_array = attrs['initial_state'].numpy()
@@ -177,26 +217,24 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
                         save_initial_state_as_npy(scores_out_dir, name, initial_array)
                         write_seconds = perf_counter() - started
                     if scores_decoder is not None:
-                        started = perf_counter()
-                        decoded = scores_decoder(scores_array, initial_array)
-                        decode_seconds = perf_counter() - started
-                        os.makedirs(scores_decoder_out_dir, exist_ok=True)
-                        with open(os.path.join(scores_decoder_out_dir, f"{name}.json"), "w", encoding="utf-8") as handle:
-                            json.dump(decoded, handle, indent=2)
-                            handle.write("\n")
-                        if scores_timing is not None:
-                            scores_timing.setdefault("direct_decodes", []).append({
-                                "read_id": name, "decode_seconds": decode_seconds,
-                            })
-                if scores_timing is not None:
-                    scores_timing["reads"].append({
-                        "read_id": name,
-                        "frames": int(attrs['scores'].shape[0]),
-                        "array_view_seconds": array_seconds,
-                        "npy_serialization_write_seconds": write_seconds,
-                    })
-                yield read, attrs
+                        if executor is None:
+                            decode_seconds = decode_and_write(name, scores_array, initial_array)
+                            record_timing(name, attrs, array_seconds, write_seconds, decode_seconds)
+                            yield read, attrs
+                        else:
+                            pending.append((
+                                executor.submit(decode_and_write, name, scores_array, initial_array),
+                                read, attrs, name, array_seconds, write_seconds))
+                            if len(pending) >= scores_decoder_workers * 2:
+                                yield finish_oldest()
+                    else:
+                        record_timing(name, attrs, array_seconds, write_seconds)
+                        yield read, attrs
+            while pending:
+                yield finish_oldest()
         finally:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
             if scores_consumer is not None:
                 finalize = getattr(scores_consumer, "finalize", None)
                 if finalize is not None:
@@ -215,6 +253,9 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
             if scores_decoder_out_dir is None:
                 raise ValueError("scores_decoder_out_dir is required with scores_decoder")
             sys.stderr.write(f"Direct decoder results will be saved to {scores_decoder_out_dir}\n")
+            if scores_decoder_workers < 1:
+                raise ValueError("scores_decoder_workers must be positive")
+            sys.stderr.write(f"Direct decoder workers: {scores_decoder_workers}\n")
         if scores_consumer is not None:
             sys.stderr.write("CRF scores will be consumed on their model device\n")
         results = export_scores(results)

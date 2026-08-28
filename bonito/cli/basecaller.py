@@ -194,6 +194,7 @@ def main(args):
                 zero_regret_reward=args.hedges_crf_zero_regret_reward,
                 state_calibration_matrices=state_calibration)
             basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
+            basecall_kwargs["scores_decoder_workers"] = args.hedges_crf_direct_workers
         if calibration_consumer is not None:
             basecall_kwargs["scores_consumer"] = calibration_consumer
     accepted = set(inspect.signature(basecall).parameters)
@@ -223,6 +224,8 @@ def main(args):
             score_timing["aggregate"] = {
                 "batch_count": len(score_timing["batches"]),
                 "read_count": len(score_timing["reads"]),
+                "direct_decoder_workers": args.hedges_crf_direct_workers,
+                "parallel_timing_is_primary": args.hedges_crf_direct_workers == 1,
                 **totals,
                 "note": "stage sums may overlap because Bonito pipelines work with thread_iter",
             }
@@ -292,6 +295,8 @@ def argparser():
                         help="Write detailed score-export timing as JSON")
     parser.add_argument("--hedges-crf-direct-results-dir", default=None,
                         help="Decode CRF scores in memory with the experimental C++ HEDGES binding")
+    parser.add_argument("--hedges-crf-direct-workers", type=int, default=1,
+                        help="Number of read-level in-memory C++ decoder workers")
     parser.add_argument("--hedges-crf-calibration-matrix", default=None,
                         help="State-specific 5x5 calibration artifact for direct CRF-HEDGES decode")
     parser.add_argument("--hedges-crf-coderatecode", type=int, default=3,
