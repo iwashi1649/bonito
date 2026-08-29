@@ -193,6 +193,7 @@ def main(args):
                 coderatecode=args.hedges_crf_coderatecode,
                 zero_regret_reward=args.hedges_crf_zero_regret_reward,
                 regret_scaled_reward_alpha=args.hedges_crf_regret_scaled_reward_alpha,
+                directional_waste_diagnostic=args.hedges_crf_directional_waste_diagnostic,
                 state_calibration_matrices=state_calibration)
             basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
             basecall_kwargs["scores_decoder_workers"] = args.hedges_crf_direct_workers
@@ -306,6 +307,8 @@ def argparser():
                         help="Zero-regret reward for the experimental in-memory decoder")
     parser.add_argument("--hedges-crf-regret-scaled-reward-alpha", type=float, default=-1.0,
                         help="Set reward per read to alpha times its p10 nonzero regret")
+    parser.add_argument("--hedges-crf-directional-waste-diagnostic", action="store_true",
+                        help="Measure reward-directional off-terminal-path search work")
     parser.add_argument("--calibration-reference-fasta", default=None,
                         help="Known per-read references for on-device calibration statistics")
     parser.add_argument("--calibration-manifest", default=None,
