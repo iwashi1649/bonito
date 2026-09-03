@@ -192,6 +192,10 @@ def main(args):
                 scores, initial, "TCGAAGTCAGCGTGTATTGTATG", "AGTAGTGAGTGCGATTAAGCGTGTT",
                 coderatecode=args.hedges_crf_coderatecode,
                 zero_regret_reward=args.hedges_crf_zero_regret_reward,
+                max_transitions=args.hedges_crf_max_transition_evaluations,
+                max_heap_pops=args.hedges_crf_max_heap_pops,
+                max_heap_size=args.hedges_crf_max_heap_size,
+                max_wall_seconds=args.hedges_crf_max_wall_seconds,
                 regret_scaled_reward_alpha=args.hedges_crf_regret_scaled_reward_alpha,
                 directional_waste_diagnostic=args.hedges_crf_directional_waste_diagnostic,
                 state_calibration_matrices=state_calibration)
@@ -299,6 +303,14 @@ def argparser():
                         help="Decode CRF scores in memory with the experimental C++ HEDGES binding")
     parser.add_argument("--hedges-crf-direct-workers", type=int, default=1,
                         help="Number of read-level in-memory C++ decoder workers")
+    parser.add_argument("--hedges-crf-max-transition-evaluations", type=int, default=2000000,
+                        help="Maximum transition evaluations per direct decoder read")
+    parser.add_argument("--hedges-crf-max-heap-pops", type=int, default=500000,
+                        help="Maximum heap pops per direct decoder read")
+    parser.add_argument("--hedges-crf-max-heap-size", type=int, default=1000000,
+                        help="Maximum live heap entries per direct decoder read")
+    parser.add_argument("--hedges-crf-max-wall-seconds", type=float, default=300.0,
+                        help="Maximum direct decoder search seconds per read")
     parser.add_argument("--hedges-crf-calibration-matrix", default=None,
                         help="State-specific 5x5 calibration artifact for direct CRF-HEDGES decode")
     parser.add_argument("--hedges-crf-coderatecode", type=int, default=3,
