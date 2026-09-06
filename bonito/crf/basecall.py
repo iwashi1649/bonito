@@ -201,9 +201,15 @@ def basecall(model, reads, chunksize=4000, overlap=100, batchsize=32,
                 started = perf_counter()
                 if scores_consumer is not None:
                     scores_consumer(name, attrs['scores'], attrs['initial_state'])
+                    consumer_seconds = perf_counter() - started
                     array_seconds = 0.0
                     write_seconds = 0.0
-                    record_timing(name, attrs, array_seconds, write_seconds)
+                    decode_seconds = (
+                        consumer_seconds
+                        if getattr(scores_consumer, 'records_decode_timing', False)
+                        else None
+                    )
+                    record_timing(name, attrs, array_seconds, write_seconds, decode_seconds)
                     yield read, attrs
                 else:
                     scores_array = attrs['scores'].numpy()

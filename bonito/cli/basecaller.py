@@ -188,10 +188,10 @@ def main(args):
                 payload = json.loads(Path(args.hedges_crf_calibration_matrix).read_text(encoding="utf-8"))
                 state_calibration, _ = load_calibration_payload(payload)
             binding = load_binding()
-            basecall_kwargs["scores_decoder"] = lambda scores, initial: binding.decode_probabilities(
+            decode_one = lambda scores, initial, reward: binding.decode_probabilities(
                 scores, initial, "TCGAAGTCAGCGTGTATTGTATG", "AGTAGTGAGTGCGATTAAGCGTGTT",
                 coderatecode=args.hedges_crf_coderatecode,
-                zero_regret_reward=args.hedges_crf_zero_regret_reward,
+                zero_regret_reward=reward,
                 max_transitions=args.hedges_crf_max_transition_evaluations,
                 max_heap_pops=args.hedges_crf_max_heap_pops,
                 max_heap_size=args.hedges_crf_max_heap_size,
@@ -199,8 +199,20 @@ def main(args):
                 regret_scaled_reward_alpha=args.hedges_crf_regret_scaled_reward_alpha,
                 directional_waste_diagnostic=args.hedges_crf_directional_waste_diagnostic,
                 state_calibration_matrices=state_calibration)
-            basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
-            basecall_kwargs["scores_decoder_workers"] = args.hedges_crf_direct_workers
+            if args.hedges_crf_adaptive_state is not None:
+                if args.hedges_crf_direct_workers != 1:
+                    raise ValueError("adaptive reward requires one ordered decoder worker")
+                from nanopore_dna_storage.decoding.adaptive_hedges_consumer import AdaptiveHedgesConsumer
+                sizes=tuple(int(x) for x in args.hedges_crf_adaptive_batch_sizes.split(','))
+                basecall_kwargs["scores_consumer"] = AdaptiveHedgesConsumer(
+                    decode_one, args.hedges_crf_direct_results_dir, args.hedges_crf_adaptive_state,
+                    args.hedges_crf_zero_regret_reward, sizes, args.hedges_crf_adaptive_stop_delta,
+                    args.hedges_crf_adaptive_minimum_reward, args.hedges_crf_adaptive_maximum_reward)
+            else:
+                basecall_kwargs["scores_decoder"] = lambda scores, initial: decode_one(
+                    scores, initial, args.hedges_crf_zero_regret_reward)
+                basecall_kwargs["scores_decoder_out_dir"] = args.hedges_crf_direct_results_dir
+                basecall_kwargs["scores_decoder_workers"] = args.hedges_crf_direct_workers
         if calibration_consumer is not None:
             basecall_kwargs["scores_consumer"] = calibration_consumer
     accepted = set(inspect.signature(basecall).parameters)
@@ -321,6 +333,12 @@ def argparser():
                         help="Set reward per read to alpha times its p10 nonzero regret")
     parser.add_argument("--hedges-crf-directional-waste-diagnostic", action="store_true",
                         help="Measure reward-directional off-terminal-path search work")
+    parser.add_argument("--hedges-crf-adaptive-state", default=None,
+                        help="Run persistent causal adaptive reward and write its state JSON")
+    parser.add_argument("--hedges-crf-adaptive-batch-sizes", default="10,20,40,80,160,320")
+    parser.add_argument("--hedges-crf-adaptive-stop-delta", type=float, default=0.01)
+    parser.add_argument("--hedges-crf-adaptive-minimum-reward", type=float, default=0.0)
+    parser.add_argument("--hedges-crf-adaptive-maximum-reward", type=float, default=0.8)
     parser.add_argument("--calibration-reference-fasta", default=None,
                         help="Known per-read references for on-device calibration statistics")
     parser.add_argument("--calibration-manifest", default=None,
